@@ -2,6 +2,7 @@
 # .bashrc から source して使うスクリプト。
 # 呼び出し元のシェルに変数（特にパスワード）や関数を残さないよう、
 # 処理はすべて関数内のローカル変数で行い、最後に関数自体も削除する。
+# 仕様: proxy-auto-settings/README.md#自動判別の仕組み
 
 # proxy.env を「KEY=VALUE」形式として読み込む（シェルスクリプトとしては実行しない）
 __proxy_load_env() {
@@ -40,6 +41,8 @@ __proxy_in_proxy_network() {
 
 __proxy_user_main() {
     local env_file="$HOME/proxy.env"
+    local curlrc="$HOME/.curlrc"
+    local proxy_env_vars=(http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY)
     local PROXY_USER="" PROXY_PASS="" PROXY_HOST="" PROXY_PORT="" PROXY_DNS=""
     local proxy_url credentials=""
 
@@ -60,24 +63,28 @@ __proxy_user_main() {
     proxy_url="http://${credentials}${PROXY_HOST}:${PROXY_PORT}/"
 
     # .curlrc の既存プロキシ設定は、適用・解除どちらの場合も一旦削除する
-    [ -f "$HOME/.curlrc" ] && sed -i '/^proxy/d' "$HOME/.curlrc"
+    if [ -f "$curlrc" ]; then
+        sed -i '/^proxy/d' "$curlrc"
+    fi
 
+    local name
     if __proxy_in_proxy_network "$PROXY_DNS"; then
         echo -e "\e[31m[ User ] Set  user  proxy settings\e[m" 1>&2
 
         # 環境変数
-        export http_proxy="$proxy_url" https_proxy="$proxy_url" ftp_proxy="$proxy_url"
-        export HTTP_PROXY="$proxy_url" HTTPS_PROXY="$proxy_url" FTP_PROXY="$proxy_url"
+        for name in "${proxy_env_vars[@]}"; do
+            export "$name=$proxy_url"
+        done
 
         # Git（https 通信にも http.proxy が使われる）
         git config --global http.proxy "$proxy_url"
 
         # curl（パスワードを含むので本人のみ読み書き可能にする）
-        echo "proxy = \"$proxy_url\"" >> "$HOME/.curlrc"
-        chmod 600 "$HOME/.curlrc"
+        echo "proxy = \"$proxy_url\"" >> "$curlrc"
+        chmod 600 "$curlrc"
     else
         echo -e "\e[36m[ User ] Unset  user  proxy settings\e[m" 1>&2
-        unset http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY
+        unset "${proxy_env_vars[@]}"
         git config --global --unset http.proxy
         # 旧バージョンが設定していた値も掃除する
         git config --global --unset https.proxy

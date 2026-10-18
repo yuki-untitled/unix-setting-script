@@ -1,4 +1,5 @@
 #!/bin/bash
+# 仕様: github-setup/README.md#処理内容
 set -eu
 
 KEY_FILE="$HOME/.ssh/id_ed25519"
