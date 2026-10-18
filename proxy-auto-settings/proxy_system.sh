@@ -2,6 +2,12 @@
 # sudo（root 権限）で実行するスクリプト。
 # proxy.env はユーザーが自由に書き換えられるファイルなので、
 # root として source（実行）せず、値だけを読み取って厳密に検証する。
+# 仕様: proxy-auto-settings/README.md#自動判別の仕組み
+
+ENVIRONMENT_FILE="/etc/environment"
+APT_PROXY_CONF="/etc/apt/apt.conf.d/99proxy"
+WGETRC="/etc/wgetrc"
+PROXY_ENV_VARS=(http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY)
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "[System] Error: run this script with sudo." 1>&2
@@ -50,29 +56,29 @@ in_proxy_network() {
 
 # 以前に書き込んだプロキシ設定を削除する
 remove_system_proxy() {
-    sed -i -E '/^(https?|ftp)_proxy=/Id' /etc/environment
-    rm -f /etc/apt/apt.conf.d/99proxy
-    [ -f /etc/wgetrc ] && sed -i -E '/^(https?|ftp)_proxy/d' /etc/wgetrc
+    sed -i -E '/^(https?|ftp)_proxy=/Id' "$ENVIRONMENT_FILE"
+    rm -f "$APT_PROXY_CONF"
+    if [ -f "$WGETRC" ]; then
+        sed -i -E '/^(https?|ftp)_proxy/d' "$WGETRC"
+    fi
 }
 
 set_system_proxy() {
     echo -e "\e[31m[System] Set system proxy settings\e[m" 1>&2
     remove_system_proxy
 
-    # /etc/environment
     local name
-    for name in http_proxy https_proxy ftp_proxy HTTP_PROXY HTTPS_PROXY FTP_PROXY; do
-        echo "${name}=\"${PROXY_URL}\"" >> /etc/environment
+    for name in "${PROXY_ENV_VARS[@]}"; do
+        echo "${name}=\"${PROXY_URL}\"" >> "$ENVIRONMENT_FILE"
     done
 
     # apt設定 (独立ファイルで管理)
     printf 'Acquire::http::proxy "%s";\nAcquire::https::proxy "%s";\n' "$PROXY_URL" "$PROXY_URL" \
-        > /etc/apt/apt.conf.d/99proxy
+        > "$APT_PROXY_CONF"
 
-    # wget設定
-    if [ -f /etc/wgetrc ]; then
+    if [ -f "$WGETRC" ]; then
         printf 'http_proxy = %s\nhttps_proxy = %s\nftp_proxy = %s\n' "$PROXY_URL" "$PROXY_URL" "$PROXY_URL" \
-            >> /etc/wgetrc
+            >> "$WGETRC"
     fi
 }
 
@@ -81,28 +87,38 @@ unset_system_proxy() {
     remove_system_proxy
 }
 
-if [ ! -f "$ENV_FILE" ]; then
-    echo "[System] Error: $ENV_FILE not found." 1>&2
-    exit 1
-fi
-
-PROXY_USER="" PROXY_PASS="" PROXY_HOST="" PROXY_PORT="" PROXY_DNS=""
-load_env "$ENV_FILE"
-
 # root で書き込む値なので、想定外の文字が入っていたら何もせず終了する
-if ! [[ "$PROXY_HOST" =~ ^[A-Za-z0-9.-]+$ && "$PROXY_PORT" =~ ^[0-9]+$ && "$PROXY_DNS" =~ ^[A-Za-z0-9.-]+$ ]]; then
-    echo "[System] Error: invalid PROXY_HOST / PROXY_PORT / PROXY_DNS in $ENV_FILE." 1>&2
-    exit 1
-fi
+validate_proxy_settings() {
+    if ! [[ "$PROXY_HOST" =~ ^[A-Za-z0-9.-]+$ && "$PROXY_PORT" =~ ^[0-9]+$ && "$PROXY_DNS" =~ ^[A-Za-z0-9.-]+$ ]]; then
+        echo "[System] Error: invalid PROXY_HOST / PROXY_PORT / PROXY_DNS in $ENV_FILE." 1>&2
+        exit 1
+    fi
+}
 
-CREDENTIALS=""
-if [ -n "$PROXY_USER" ]; then
-    CREDENTIALS="$(urlencode "$PROXY_USER"):$(urlencode "$PROXY_PASS")@"
-fi
-PROXY_URL="http://${CREDENTIALS}${PROXY_HOST}:${PROXY_PORT}/"
+build_proxy_url() {
+    local credentials=""
+    if [ -n "$PROXY_USER" ]; then
+        credentials="$(urlencode "$PROXY_USER"):$(urlencode "$PROXY_PASS")@"
+    fi
+    PROXY_URL="http://${credentials}${PROXY_HOST}:${PROXY_PORT}/"
+}
 
-if in_proxy_network; then
-    set_system_proxy
-else
-    unset_system_proxy
-fi
+main() {
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "[System] Error: $ENV_FILE not found." 1>&2
+        exit 1
+    fi
+
+    PROXY_USER="" PROXY_PASS="" PROXY_HOST="" PROXY_PORT="" PROXY_DNS=""
+    load_env "$ENV_FILE"
+    validate_proxy_settings
+    build_proxy_url
+
+    if in_proxy_network; then
+        set_system_proxy
+    else
+        unset_system_proxy
+    fi
+}
+
+main
